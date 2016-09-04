@@ -1,0 +1,87 @@
+﻿// Declare kernels
+#pragma kernel Main
+#pragma kernel Spawn
+#pragma kernel Init
+#pragma kernel Instantiate
+
+// Thread group size
+#define BLOCK_SIZE 64
+
+
+uniform int agentsToSpawn;
+uniform int maxAgents;
+uniform float maxSpeed;
+uniform float maxAccel;
+uniform float scale;
+
+
+struct agentData
+{
+	float3 pos;
+	float3 vel;	
+	float life;
+};
+
+StructuredBuffer<agentData> agentBufferIn;
+RWStructuredBuffer<agentData> agentBufferOut;
+AppendStructuredBuffer<int> appendFreeBuffer;
+ConsumeStructuredBuffer<int> consumeFreeBuffer;
+StructuredBuffer<agentData> spawnBuffer;
+AppendStructuredBuffer<int> instanceAppendBuffer;
+
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Main(uint id : SV_DispatchThreadID)
+{
+	///
+	// The dead don't sim
+	int i = id.x;	
+	if(agentBufferIn[i].life <= 0.0f)
+	{
+		agentBufferOut[i].life = 0.0f;
+		return;
+	}
+	
+	///
+	// Copy unincrementing values
+	agentBufferOut[i].pos = agentBufferIn[i].pos + float3(0.0f,0.0f,maxAccel);
+
+	///
+	// Calculate lost life and handle death
+	agentBufferOut[i].life = agentBufferIn[i].life - 1.0f;
+	// if dead append to free buffer
+	if(agentBufferOut[i].life <= 0.0f)
+	{
+		appendFreeBuffer.Append(i);
+	}
+}
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Spawn(uint id : SV_DispatchThreadID)
+{
+	// get next free agent index
+	int i = id.x;
+	if(i >= agentsToSpawn) return;
+	int agentIndex = consumeFreeBuffer.Consume();
+
+	// init agent data from spawn buffer
+	agentBufferOut[agentIndex].pos = spawnBuffer[i].pos;
+	agentBufferOut[agentIndex].life = spawnBuffer[i].life;
+	agentBufferOut[agentIndex].vel = spawnBuffer[i].vel;
+}
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Init(uint id : SV_DispatchThreadID)
+{
+	int i = id.x;
+	appendFreeBuffer.Append(i);
+	agentBufferOut[i].life = 0.0f;
+}
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Instantiate(uint id : SV_DispatchThreadID)
+{
+	int i = id.x;
+	if(agentBufferIn[i].life > 0.0f)
+		instanceAppendBuffer.Append(i);
+}

@@ -1,0 +1,127 @@
+﻿// Declare kernels
+#pragma kernel Main
+#pragma kernel Spawn
+#pragma kernel Init
+#pragma kernel Instantiate
+#pragma kernel DealDamage
+
+// Thread group size
+#define BLOCK_SIZE 64
+
+
+uniform int agentsToSpawn;
+uniform int maxAgents;
+uniform float maxSpeed;
+uniform float maxAccel;
+uniform float scale;
+uniform float3 targetPos;
+float3 damagePos;
+float damageRadius;
+float damageMag;
+
+
+struct agentData
+{
+	float3 pos;
+	float3 vel;	
+	float life;
+};
+
+StructuredBuffer<agentData> agentBufferIn;
+RWStructuredBuffer<agentData> agentBufferOut;
+AppendStructuredBuffer<int> appendFreeBuffer;
+ConsumeStructuredBuffer<int> consumeFreeBuffer;
+StructuredBuffer<agentData> spawnBuffer;
+AppendStructuredBuffer<int> instanceAppendBuffer;
+RWStructuredBuffer<float> damageBuffer;
+
+[numthreads(BLOCK_SIZE,1,1)]
+void DealDamage(uint id : SV_DispatchThreadID)
+{
+	int i = id.x;
+	float3 v = agentBufferIn[i].pos - damagePos;
+	float r = length(v);
+	if(r < damageRadius)
+	{
+		damageBuffer[i] += damageMag;	
+	}
+	
+}
+
+bool preMain(uint i)
+{
+	if(agentBufferIn[i].life <=0.0f)
+	{
+		agentBufferOut[i].life = 0.0f;
+		return false;
+	}
+	return true;
+}
+
+void postMain(uint i)
+{
+	float lifeLoss = 1.0f + damageBuffer[i];
+	damageBuffer[i] = 0.0f;
+	agentBufferOut[i].life = agentBufferIn[i].life - lifeLoss;
+	if(agentBufferOut[i].life <= 0.0f)
+	{
+		appendFreeBuffer.Append(i);
+	}
+}
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Main(uint id : SV_DispatchThreadID)
+{
+	///
+	// The dead don't sim
+	int i = id.x;	
+	if(!preMain(i)) return;
+	
+	///
+	// Movement Code
+	float3 accumulation = float3(0.0f,0.0f,0.0f);
+	float3 desired = normalize(targetPos-agentBufferIn[i].pos);
+	desired *= maxAccel;
+	accumulation += (desired - agentBufferIn[i].vel);
+
+	// apply forces
+	agentBufferOut[i].vel = agentBufferIn[i].vel + accumulation;
+
+	// integrate
+	agentBufferOut[i].pos = agentBufferIn[i].pos + agentBufferOut[i].vel;
+
+	///
+	// Calculate lost life and handle death
+	postMain(i);
+}
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Spawn(uint id : SV_DispatchThreadID)
+{
+	// get next free agent index
+	int i = id.x;
+	if(i >= agentsToSpawn) return;
+	int agentIndex = consumeFreeBuffer.Consume();
+
+	// init agent data from spawn buffer
+	agentBufferOut[agentIndex].pos = spawnBuffer[i].pos;
+	agentBufferOut[agentIndex].life = spawnBuffer[i].life;
+	agentBufferOut[agentIndex].vel = spawnBuffer[i].vel;
+}
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Init(uint id : SV_DispatchThreadID)
+{
+	int i = id.x;
+	appendFreeBuffer.Append(i);
+	agentBufferOut[i].life = 0.0f;
+	damageBuffer[i] = 0.0f;
+}
+
+[numthreads(BLOCK_SIZE,1,1)]
+void Instantiate(uint id : SV_DispatchThreadID)
+{
+	int i = id.x;
+	if(agentBufferIn[i].life > 0.0f)
+		instanceAppendBuffer.Append(i);
+}
